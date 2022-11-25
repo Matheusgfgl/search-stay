@@ -1,0 +1,32 @@
+name: Auto Pull Request
+
+on:
+  pull_request:
+    types: [closed]
+    branches: 
+      - develop
+      - master
+
+jobs:
+  syncing:
+    runs-on: ubuntu-16.04
+    if: (github.base_ref == 'master' && startsWith(github.head_ref, 'hotfix/')) || (github.base_ref == 'develop' && github.head_ref != 'master')
+
+    steps:
+      - name: Syncing master to develop
+        if: github.base_ref == 'master' && startsWith(github.head_ref, 'hotfix/')
+        uses: vsoch/pull-request-action@1.0.6
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PULL_REQUEST_FROM_BRANCH: "master"
+          PULL_REQUEST_BRANCH: "develop"
+          PULL_REQUEST_TITLE: "Sincronizando Master/Develop"
+
+      - name: Creating new release PR
+        if: github.base_ref == 'develop' && github.head_ref != 'master'
+        uses: vsoch/pull-request-action@1.0.6
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PULL_REQUEST_FROM_BRANCH: "develop"
+          PULL_REQUEST_BRANCH: "master"
+          PULL_REQUEST_TITLE: "Próxima release"

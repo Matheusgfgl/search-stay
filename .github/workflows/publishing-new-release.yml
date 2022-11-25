@@ -1,0 +1,90 @@
+name: Production Release, Docker Build & ECR Upload
+
+on:
+  pull_request:
+    types: [closed]
+    branches: 
+      - master
+
+jobs:
+  new-release:
+    runs-on: ubuntu-16.04
+    if: contains(github.event.pull_request.labels.*.name, '#novo-release')
+    outputs:
+      RELEASE_NUMBER: ${{ env.RELEASE_NUMBER }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v1
+
+      - name: Getting the PR label to know the next version
+        run: if [ ${{ contains(github.event.pull_request.labels.*.name, '#major') }} = true ]; then type='major'; elif [ ${{ contains(github.event.pull_request.labels.*.name, '#minor') }} = true ]; then type='minor'; else type='patch'; fi; echo NEXT_VERSION_LABEL=v_$type >> $GITHUB_ENV
+
+      - name: Has previous versions?
+        run: if [ `git rev-list --tags --max-count=1` ]; then has=true; else has=false; fi; echo HAS_PREVIOUS_RELEASE=$has >> $GITHUB_ENV
+
+      - name: Getting the actual version
+        run: if [ ${{ env.HAS_PREVIOUS_RELEASE }} = true ]; then version=`git describe --tags \`git rev-list --tags --max-count=1\``; else version=v0.0.0; fi; echo ACTUAL_VERSION=$version >> $GITHUB_ENV;
+
+      - name: Getting the next version possibilities
+        id: semvers
+        uses: "WyriHaximus/github-action-next-semvers@v1"
+        with:
+          version: ${{ env.ACTUAL_VERSION }}
+
+      - name: Getting the new version based on PR label
+        run: echo RELEASE_NUMBER=${{ steps.semvers.outputs[env.NEXT_VERSION_LABEL] }} >> $GITHUB_ENV
+
+      - name: Creating the new release
+        id: create_release
+        uses: actions/create-release@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: ${{ env.RELEASE_NUMBER }}
+          release_name: Release ${{ env.RELEASE_NUMBER }}
+          body: ${{ github.event.pull_request.body }}
+          draft: false
+          prerelease: false
+
+  build-upload:
+    runs-on: ubuntu-latest
+    needs: new-release
+    outputs:
+      IMAGE_TAG: ${{ env.IMAGE_TAG }}
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v2
+
+    - name: Configuring AWS credentials
+      uses: aws-actions/configure-aws-credentials@v1
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: us-east-1
+
+    - name: Login on Amazon ECR
+      id: login-ecr
+      uses: aws-actions/amazon-ecr-login@v1
+
+    - name: New release TAG
+      run: if [ ${{ github.event_name }} = 'release' ]; then tag=${{ github.ref }}; else tag=${{ needs.new-release.outputs.RELEASE_NUMBER }}; fi; echo IMAGE_TAG=$tag >> $GITHUB_ENV
+
+    - name: Getting the complete ECR URI
+      run: echo ECR_URI=${{ steps.login-ecr.outputs.registry }}/${{ github.event.repository.name }}:${{ env.IMAGE_TAG }} >> $GITHUB_ENV
+
+    - name: Build, and push image to Amazon ECR
+      run: |
+        docker build --build-arg ENVIRONMENT_BUILD=production -f docker/Dockerfile -t ${{ env.ECR_URI }} .
+        docker push ${{ env.ECR_URI }}
+    
+    - name: Commenting the image url on PR
+      uses: mshick/add-pr-comment@v1
+      if: github.event_name == 'pull_request' && github.event.action == 'closed'
+      with:
+        message: |
+          **URI da imagem de novo release:** ${{ env.ECR_URI }}
+        repo-token: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: Logout of Amazon ECR
+      if: always()
+      run: docker logout ${{ steps.login-ecr.outputs.registry }}
